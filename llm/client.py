@@ -1,28 +1,20 @@
 """
-Cliente de LLM. Abstrai a chamada ao modelo por trás de uma interface
-simples, para que trocar de Llama 3.1 -> Qwen2.5 -> API externa
-exija mudar só este arquivo (configuração), não o resto do sistema.
+Cliente do LLM (API REST nativa do Ollama). Trocar de modelo ou de
+provedor deve exigir mudanças só neste arquivo.
 
-Usa a API REST nativa do Ollama (http://localhost:11434), sem dependências
-externas além de 'requests'.
-
-SOBRE FALHAS DE FORMATO JSON (relevante para modelos ~8B):
-O modo 'format: json' do Ollama garante JSON sintaticamente válido, mas
-NÃO garante que os campos venham com os nomes exatos pedidos no prompt --
-isso é comportamento conhecido em modelos pequenos, especialmente quando
-o contexto (histórico do debate) já está grande. Por isso:
-  1. Toda falha de validação aqui LOGA a resposta bruta (stderr), para
-     você conseguir inspecionar o que o modelo respondeu de fato.
-  2. Há uma normalização de nomes de campo comuns (ex: "voto" -> "intencao_voto")
-     antes de desistir, porque na prática o modelo costuma variar o nome
-     do campo mais do que omitir a informação.
+Sobre JSON com modelos ~8B: `format: json` garante JSON sintaticamente
+válido, mas não que os campos venham com os nomes pedidos. Por isso
+`gerar_json` normaliza sinônimos comuns, valida o conteúdo e, se falhar,
+tenta de novo reforçando o formato no prompt (e mudando a seed, senão a
+nova tentativa repetiria a mesma saída).
 """
 
+from dataclasses import dataclass
 import json
 import sys
-import time
+from typing import Callable
+
 import requests
-from dataclasses import dataclass
 
 
 @dataclass
@@ -30,120 +22,88 @@ class ConfigLLM:
     modelo: str = "llama3.1:8b"
     host: str = "http://localhost:11434"
     temperatura: float = 0.7
-    seed: int | None = None       # fixar para reprodutibilidade (RQ4)
-    max_tentativas_json: int = 5  # retries se o JSON vier malformado/incompleto
-    num_ctx: int | None = None    # tamanho da janela de contexto (ver nota abaixo)
+    seed: int | None = None
+    # O padrão do Ollama (2048-4096) é pequeno para persona + histórico do
+    # debate; quando estoura, o Ollama corta o INÍCIO do prompt sem avisar.
+    num_ctx: int = 8192
+    max_tentativas_json: int = 5
+    timeout: int = 300
 
 
-# Nomes alternativos que o modelo às vezes usa em vez do nome exato pedido.
-# Mapeia variação -> nome canônico esperado pelo sistema.
 ALIASES_CAMPOS = {
-    "intencao_voto": ["voto", "intencao", "candidato_escolhido", "escolha"],
-    "confianca": ["nivel_confianca", "certeza", "grau_confianca", "confidence"],
-    "justificativa": ["razao", "motivo", "explicacao", "justificacao", "reasoning"],
+    "intencao_voto": ["voto", "intencao", "candidato", "escolha"],
+    "confianca": ["nivel_confianca", "certeza", "confidence"],
+    "justificativa": ["razao", "motivo", "explicacao", "justificacao"],
 }
-
-
-def _normalizar_campos(data: dict, campos_esperados: list[str]) -> dict:
-    """Tenta mapear nomes de campo alternativos para os nomes canônicos
-    esperados, sem perder os dados caso o modelo tenha usado um sinônimo."""
-    normalizado = dict(data)
-    for campo_canonico in campos_esperados:
-        if campo_canonico in normalizado:
-            continue
-        for alias in ALIASES_CAMPOS.get(campo_canonico, []):
-            if alias in data:
-                normalizado[campo_canonico] = data[alias]
-                break
-    return normalizado
 
 
 class LLMClient:
     def __init__(self, config: ConfigLLM):
         self.config = config
 
-    def _chamar(self, system: str, prompt: str, formato_json: bool = False) -> str:
-        """Chamada bruta ao Ollama. Levanta exceção se a requisição falhar."""
+    def _chamar(self, system: str, prompt: str, formato_json: bool = False, tentativa: int = 0) -> str:
+        opcoes = {"temperature": self.config.temperatura, "num_ctx": self.config.num_ctx}
+        if self.config.seed is not None:
+            opcoes["seed"] = self.config.seed + tentativa
         payload = {
             "model": self.config.modelo,
             "system": system,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "temperature": self.config.temperatura,
-            },
+            "options": opcoes,
         }
-        if self.config.seed is not None:
-            payload["options"]["seed"] = self.config.seed
-        if self.config.num_ctx is not None:
-            payload["options"]["num_ctx"] = self.config.num_ctx
         if formato_json:
-            payload["format"] = "json"  # Ollama força saída JSON sintaticamente válida
+            payload["format"] = "json"
 
-        resp = requests.post(f"{self.config.host}/api/generate", json=payload, timeout=180)
+        resp = requests.post(f"{self.config.host}/api/generate", json=payload, timeout=self.config.timeout)
         resp.raise_for_status()
-        return resp.json()["response"]
+        return resp.json()["response"].strip()
 
     def gerar_texto(self, system: str, prompt: str) -> str:
-        """Para falas de candidato / narrativas de persona: texto livre."""
-        return self._chamar(system, prompt, formato_json=False).strip()
+        return self._chamar(system, prompt)
 
-    def gerar_json_validado(self, system: str, prompt: str, campos_obrigatorios: list[str]) -> dict:
+    def gerar_json(
+        self,
+        system: str,
+        prompt: str,
+        campos: list[str],
+        validar: Callable[[dict], dict] | None = None,
+    ) -> dict:
         """
-        Gera JSON e valida que os campos esperados existem, com:
-          1. normalização de nomes de campo alternativos (ALIASES_CAMPOS)
-          2. log da resposta bruta em CADA tentativa falha (stderr), para
-             diagnóstico -- sem isso, falhas de formato são uma caixa-preta
-          3. retry com lembrete explícito do formato esperado, reforçado
-             a cada nova tentativa (ajuda quando o motivo foi o modelo
-             "perder" a instrução em contexto longo)
+        Gera um JSON com `campos` obrigatórios. `validar` recebe o dict e
+        devolve a versão normalizada, ou levanta ValueError para pedir
+        nova tentativa.
         """
-        ultimo_bruto = None
-        ultimo_erro = None
         prompt_atual = prompt
-
-        for tentativa in range(1, self.config.max_tentativas_json + 1):
-            bruto = self._chamar(system, prompt_atual, formato_json=True)
-            ultimo_bruto = bruto
-
+        erro = None
+        for tentativa in range(self.config.max_tentativas_json):
+            bruto = self._chamar(system, prompt_atual, formato_json=True, tentativa=tentativa)
             try:
-                data = json.loads(bruto)
-            except json.JSONDecodeError as e:
-                ultimo_erro = f"JSON sintaticamente inválido: {e}"
-                print(f"[LLMClient] tentativa {tentativa}/{self.config.max_tentativas_json} "
-                      f"falhou ({ultimo_erro}). Resposta bruta: {bruto!r}", file=sys.stderr)
-                time.sleep(0.5)
-                prompt_atual = self._prompt_com_lembrete(prompt, campos_obrigatorios)
-                continue
+                data = _normalizar_campos(json.loads(bruto), campos)
+                faltando = [c for c in campos if c not in data]
+                if faltando:
+                    raise ValueError(f"campos faltando: {faltando}")
+                return validar(data) if validar else data
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                erro = e
+                print(f"[LLM] tentativa {tentativa + 1}/{self.config.max_tentativas_json} "
+                      f"falhou ({e}). Resposta: {bruto!r}", file=sys.stderr)
+                prompt_atual = (
+                    f"{prompt}\n\nLEMBRETE: responda APENAS com um JSON contendo exatamente "
+                    f"os campos {', '.join(campos)}, nos formatos pedidos."
+                )
+        raise ValueError(f"JSON inválido após {self.config.max_tentativas_json} tentativas: {erro}")
 
-            data_normalizado = _normalizar_campos(data, campos_obrigatorios)
-            faltando = [c for c in campos_obrigatorios if c not in data_normalizado]
 
-            if not faltando:
-                return data_normalizado
-
-            ultimo_erro = f"Campos faltando após normalização: {faltando}"
-            print(f"[LLMClient] tentativa {tentativa}/{self.config.max_tentativas_json} "
-                  f"falhou ({ultimo_erro}). JSON recebido: {data!r}", file=sys.stderr)
-            time.sleep(0.5)
-            prompt_atual = self._prompt_com_lembrete(prompt, campos_obrigatorios)
-
-        raise ValueError(
-            f"Falha ao obter JSON com todos os campos obrigatórios "
-            f"após {self.config.max_tentativas_json} tentativas.\n"
-            f"Último erro: {ultimo_erro}\n"
-            f"Última resposta bruta do modelo: {ultimo_bruto!r}"
-        )
-
-    @staticmethod
-    def _prompt_com_lembrete(prompt_original: str, campos_obrigatorios: list[str]) -> str:
-        """Reforça a instrução de formato no final do prompt -- útil quando
-        o contexto já está longo e o modelo 'esquece' a instrução original
-        que veio só no system prompt."""
-        campos_str = ", ".join(f'"{c}"' for c in campos_obrigatorios)
-        return (
-            f"{prompt_original}\n\n"
-            f"LEMBRETE IMPORTANTE: responda APENAS com um JSON contendo "
-            f"exatamente os campos {campos_str}. Não inclua nenhum texto "
-            f"fora do JSON."
-        )
+def _normalizar_campos(data: dict, campos: list[str]) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("a resposta não é um objeto JSON")
+    normalizado = dict(data)
+    for campo in campos:
+        if campo in normalizado:
+            continue
+        for alias in ALIASES_CAMPOS.get(campo, []):
+            if alias in data:
+                normalizado[campo] = data[alias]
+                break
+    return normalizado

@@ -1,85 +1,59 @@
 """
-Análise exploratória simples: junta eleitores + respostas e olha a
-relação entre traços (Big Five / Fundamentos Morais) e mudança de
-intenção de voto ao longo das rodadas.
+Carrega um banco da simulação em DataFrames. A análise propriamente dita
+será escrita quando as RQs estiverem definidas.
 
-Isso é DELIBERADAMENTE simples (estatística descritiva, não inferencial)
--- o objetivo aqui é ter algo visual para mostrar na reunião, não a
-análise final do TCC. A análise inferencial (regressão logística/mista
-para RQ1/RQ2) vem depois, com volume de dados maior.
+    python -m analysis.explorar --db storage/experimento.db
+
+IMPORTANTE: o mesmo eleitor_id aparece em várias execuções (o lote é
+reaproveitado), então todo cruzamento entre tabelas deve usar
+(run_id, eleitor_id), nunca só eleitor_id.
 """
 
-import sqlite3
+import argparse
 import json
+import sqlite3
+
 import pandas as pd
 
 
-def carregar_dataframes(db_path: str = "storage/debate_sim.db"):
-    conn = sqlite3.connect(db_path)
+def carregar_dataframes(db_path: str) -> dict[str, pd.DataFrame]:
+    with sqlite3.connect(db_path) as conn:
+        tabelas = {t: pd.read_sql(f"SELECT * FROM {t}", conn)
+                   for t in ("runs", "eleitores", "falas", "respostas")}
 
-    eleitores_raw = pd.read_sql("SELECT * FROM eleitores", conn)
-    respostas = pd.read_sql("SELECT * FROM respostas", conn)
-    falas = pd.read_sql("SELECT * FROM falas", conn)
-    conn.close()
-
-    # "Achata" os campos JSON de big_five e fundamentos_morais em colunas
-    big_five_df = pd.json_normalize(eleitores_raw["big_five_json"].apply(json.loads))
-    fundamentos_df = pd.json_normalize(eleitores_raw["fundamentos_morais_json"].apply(json.loads))
-    perfil_df = pd.json_normalize(eleitores_raw["perfil_json"].apply(json.loads))
-
-    eleitores = pd.concat(
-        [eleitores_raw[["run_id", "eleitor_id", "narrativa"]], perfil_df, big_five_df, fundamentos_df],
+    brutos = tabelas["eleitores"]
+    tabelas["eleitores"] = pd.concat(
+        [brutos[["run_id", "eleitor_id", "narrativa"]]]
+        + [pd.json_normalize(brutos[col].apply(json.loads))
+           for col in ("perfil_json", "big_five_json", "fundamentos_morais_json")],
         axis=1,
     )
-
-    return eleitores, respostas, falas
-
-
-def resumo_mudancas_por_eleitor(eleitores: pd.DataFrame, respostas: pd.DataFrame) -> pd.DataFrame:
-    """Quantas vezes cada eleitor mudou de posição ao longo da simulação,
-    cruzado com seus traços -- a tabela mais direta para RQ1/RQ2.
-
-    A rodada 0 (estado inicial "indeciso" antes do debate, confiança
-    placeholder 0.0) é excluída do cálculo de confiança média -- não é
-    uma confiança real avaliada pelo modelo. `mudou_de_posicao` na
-    rodada 0 é sempre False por construção, então não precisa de
-    tratamento especial ali."""
-    respostas_debate = respostas[respostas["rodada"] > 0]
-    mudancas = respostas.groupby("eleitor_id")["mudou_de_posicao"].sum().rename("n_mudancas")
-    confianca_media = respostas_debate.groupby("eleitor_id")["confianca"].mean().rename("confianca_media")
-
-    tabela = eleitores.merge(mudancas, on="eleitor_id", how="left")
-    tabela = tabela.merge(confianca_media, on="eleitor_id", how="left")
-    tabela["n_mudancas"] = tabela["n_mudancas"].fillna(0)
-
-    colunas_interesse = [
-        "eleitor_id", "idade", "regiao", "n_mudancas", "confianca_media",
-        "abertura", "conscienciosidade", "extroversao", "amabilidade", "neuroticismo",
-        "cuidado_dano", "justica_reciprocidade", "lealdade_grupo",
-        "autoridade_respeito", "pureza_santidade",
-    ]
-    return tabela[colunas_interesse].sort_values("n_mudancas", ascending=False)
+    tabelas["respostas"]["mudou_de_posicao"] = tabelas["respostas"]["mudou_de_posicao"].astype(bool)
+    return tabelas
 
 
-def correlacao_tracos_x_mudancas(tabela_resumo: pd.DataFrame) -> pd.Series:
-    """Correlação simples (Pearson) entre cada traço e número de mudanças.
-    Com N pequeno (protótipo) isso é só exploratório -- não tem poder
-    estatístico para conclusões, mas já mostra direção e serve de
-    sanity-check de que os traços estão de fato gerando variação no
-    comportamento simulado."""
-    tracos = [
-        "abertura", "conscienciosidade", "extroversao", "amabilidade", "neuroticismo",
-        "cuidado_dano", "justica_reciprocidade", "lealdade_grupo",
-        "autoridade_respeito", "pureza_santidade",
-    ]
-    return tabela_resumo[tracos + ["n_mudancas"]].corr()["n_mudancas"].drop("n_mudancas").sort_values(ascending=False)
+def painel(tabelas: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Uma linha por (execução, eleitor, rodada), com confronto, perfil e traços."""
+    return (
+        tabelas["respostas"]
+        .merge(tabelas["runs"][["run_id", "tipo_candidato_1", "tipo_candidato_2", "seed"]], on="run_id")
+        .merge(tabelas["eleitores"], on=["run_id", "eleitor_id"])
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db", default="storage/experimento.db")
+    args = parser.parse_args()
+
+    tabelas = carregar_dataframes(args.db)
+    dados = painel(tabelas)
+    ultima = dados[dados["rodada"] == dados.groupby("run_id")["rodada"].transform("max")]
+
+    print("Intenção de voto ao fim de cada execução:")
+    resumo = ultima.groupby(["run_id", "tipo_candidato_1", "tipo_candidato_2", "intencao_voto"]).size()
+    print(resumo.unstack(fill_value=0).to_string())
 
 
 if __name__ == "__main__":
-    eleitores, respostas, falas = carregar_dataframes()
-    tabela = resumo_mudancas_por_eleitor(eleitores, respostas)
-    print("Resumo por eleitor:")
-    print(tabela.to_string(index=False))
-
-    print("\nCorrelação (traço x número de mudanças de posição):")
-    print(correlacao_tracos_x_mudancas(tabela))
+    main()

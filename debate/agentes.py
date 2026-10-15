@@ -1,230 +1,179 @@
 """
-Agentes do debate: Candidato e Eleitor.
+Agentes do debate: mediador, candidato e eleitor.
 
-Candidato: gera uma fala por rodada, com uma estratégia argumentativa
-explícita (necessário para RQ3 -- ver discussão no chat/metodologia).
-
-Eleitor: lê o histórico do debate (todas as falas até agora) e devolve
-uma intenção de voto estruturada em JSON, condicionada na sua persona.
-NÃO interage com outros eleitores -- só observa o debate.
+Os eleitores só observam o debate (não interagem entre si) e, ao fim de
+cada rodada, devolvem a intenção de voto em JSON.
 """
 
-import random
-
-from schemas import (
-    PersonaCandidato, PersonaEleitor, FalaCandidato,
-    RespostaEleitor, EstrategiaArgumentativa,
-)
+from debate.candidatos import PLATAFORMA, TRAJETORIA, TipoCandidato
 from llm.client import LLMClient
+from schemas import INDECISO, PersonaEleitor, RespostaEleitor
 
 
 # ---------------------------------------------------------------------------
-# Moderador
+# Mediador
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT_MODERADOR = """\
-Você é o(a) moderador(a) de um debate eleitoral. Sua função é apresentar
-o tema da rodada como uma pergunta direta e neutra para os candidatos,
-sem favorecer nenhum dos lados.
+SYSTEM_MEDIADOR = """\
+Você é o(a) mediador(a) de um debate eleitoral na TV brasileira. Apresente
+o tema da rodada como UMA pergunta direta, concreta e neutra, igual para
+os dois candidatos, sem favorecer nenhum lado e sem repetir perguntas já
+feitas no debate.
 
-Responda APENAS com a pergunta (1-2 frases), sem introduções, sem
-saudações, sem mencionar nomes de candidatos.
-"""
+Responda APENAS com a pergunta (1 ou 2 frases), sem saudações e sem
+mencionar os candidatos."""
 
 
-class AgenteModerador:
+class Mediador:
     def __init__(self, llm: LLMClient):
         self.llm = llm
 
-    def gerar_pergunta(self, tema: str, historico_texto: str) -> str:
+    def perguntar(self, tema: str, historico: str) -> str:
         prompt = (
+            f"Debate até agora:\n{historico}\n\n"
             f"Tema desta rodada: {tema}\n\n"
-            f"Histórico do debate até agora:\n{historico_texto}\n\n"
-            f"Formule a pergunta para os candidatos sobre este tema."
+            f"Formule a pergunta."
         )
-        return self.llm.gerar_texto(system=SYSTEM_PROMPT_MODERADOR, prompt=prompt).strip()
+        return _limpar_fala(self.llm.gerar_texto(SYSTEM_MEDIADOR, prompt))
 
 
 # ---------------------------------------------------------------------------
 # Candidato
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT_ABERTURA_TEMPLATE = """\
-{persona_block}
+SYSTEM_CANDIDATO = """\
+Você é o {rotulo}, em um debate eleitoral na TV brasileira contra o {rotulo_oponente}.
 
-Você está participando de um debate eleitoral simulado. O(a) moderador(a)
-acabou de fazer uma pergunta sobre o tema "{tema}". Responda de forma
-persuasiva, no seu estilo retórico, defendendo sua posição/plataforma
-sobre o tema.
+SUA TRAJETÓRIA: {trajetoria}
 
-IMPORTANTE: nesta fala, use PREDOMINANTEMENTE a seguinte estratégia
-argumentativa: {estrategia_descricao}
+SUAS PROPOSTAS PARA O TEMA "{tema}": {propostas}
 
-Responda apenas com a fala (sem indicar "Candidato:" ou metadados),
-em português do Brasil, entre 2 e 4 frases.
-"""
+COMO VOCÊ ARGUMENTA:
+{instrucoes}
 
-SYSTEM_PROMPT_REPLICA_TEMPLATE = """\
-{persona_block}
-
-Você está participando de um debate eleitoral simulado, no tema
-"{tema}". Agora é sua vez de replicar/responder DIRETAMENTE ao que o
-oponente acabou de dizer (veja o histórico). Reaja ao argumento dele(a)
-de forma persuasiva, no seu estilo retórico.
-
-IMPORTANTE: nesta fala, use PREDOMINANTEMENTE a seguinte estratégia
-argumentativa: {estrategia_descricao}
-
-Responda apenas com a fala (sem indicar "Candidato:" ou metadados),
-em português do Brasil, entre 2 e 4 frases.
-"""
-
-DESCRICAO_ESTRATEGIA = {
-    EstrategiaArgumentativa.APELO_EMOCIONAL: "apele a emoções, histórias pessoais ou empatia",
-    EstrategiaArgumentativa.DADOS_E_LOGICA: "use dados, estatísticas e argumentação lógica",
-    EstrategiaArgumentativa.ATAQUE_AO_OPONENTE: "critique diretamente a posição ou o histórico do oponente",
-    EstrategiaArgumentativa.APELO_A_VALORES_MORAIS: "apele a valores morais e princípios (justiça, lealdade, tradição, cuidado com os outros etc.)",
-    EstrategiaArgumentativa.APELO_A_AUTORIDADE: "cite especialistas, instituições ou autoridades reconhecidas",
-}
+REGRAS:
+- Defenda as propostas acima. Você pode detalhá-las, mas não crie propostas fora delas.
+- Não mencione partidos, ideologias, nem políticos ou pessoas reais.
+- Fale em primeira pessoa, em português do Brasil, em 3 a 5 frases.
+- Responda apenas com a sua fala, sem rótulos, aspas ou comentários."""
 
 
 class AgenteCandidato:
-    def __init__(
-        self,
-        persona: PersonaCandidato,
-        llm: LLMClient,
-        estrategia_fixa: EstrategiaArgumentativa | None = None,
-    ):
-        self.persona = persona
+    def __init__(self, tipo: TipoCandidato, rotulo: str, rotulo_oponente: str, llm: LLMClient):
+        self.tipo = tipo
+        self.rotulo = rotulo
+        self.rotulo_oponente = rotulo_oponente
         self.llm = llm
-        # Se definida, este candidato usa SEMPRE esta estratégia em toda a
-        # execução (todas as falas, todas as rodadas) -- necessário para
-        # comparar estratégias de forma limpa (RQ3), ver
-        # debate/orquestrador.py e a discussão de design no chat.
-        self.estrategia_fixa = estrategia_fixa
 
-    def _escolher_estrategia(self, estrategia: EstrategiaArgumentativa | None) -> EstrategiaArgumentativa:
-        # Prioridade: (1) estratégia passada explicitamente nesta chamada,
-        # (2) estratégia fixa do candidato para a execução inteira,
-        # (3) sorteio (comportamento histórico, preservado para quem não
-        # configurar nada -- não quebra o uso anterior).
-        if estrategia is not None:
-            return estrategia
-        if self.estrategia_fixa is not None:
-            return self.estrategia_fixa
-        return random.choice(list(EstrategiaArgumentativa))
-
-    def responder_pergunta_moderador(
-        self,
-        rodada: int,
-        tema: str,
-        pergunta_moderador: str,
-        historico_texto: str,
-        estrategia: EstrategiaArgumentativa | None = None,
-    ) -> FalaCandidato:
-        """Fala de abertura da rodada: responde à pergunta do moderador."""
-        estrategia = self._escolher_estrategia(estrategia)
-        system = SYSTEM_PROMPT_ABERTURA_TEMPLATE.format(
-            persona_block=self.persona.to_prompt_block(),
+    def _system(self, tema: str) -> str:
+        return SYSTEM_CANDIDATO.format(
+            rotulo=self.rotulo,
+            rotulo_oponente=self.rotulo_oponente,
+            trajetoria=TRAJETORIA,
             tema=tema,
-            estrategia_descricao=DESCRICAO_ESTRATEGIA[estrategia],
-        )
-        prompt = (
-            f"Histórico do debate até agora:\n{historico_texto}\n\n"
-            f"Pergunta do(a) moderador(a): {pergunta_moderador}\n\n"
-            f"Dê sua resposta agora."
-        )
-        texto = self.llm.gerar_texto(system=system, prompt=prompt)
-        return FalaCandidato(
-            rodada=rodada, candidato_id=self.persona.id, estrategia=estrategia.value,
-            texto=texto, tipo_fala="abertura", tema=tema, pergunta_moderador=pergunta_moderador,
+            propostas=PLATAFORMA[tema],
+            instrucoes=self.tipo.instrucoes,
         )
 
-    def replicar(
-        self,
-        rodada: int,
-        tema: str,
-        historico_texto: str,
-        estrategia: EstrategiaArgumentativa | None = None,
-    ) -> FalaCandidato:
-        """Réplica/tréplica: responde diretamente à fala anterior do oponente."""
-        estrategia = self._escolher_estrategia(estrategia)
-        system = SYSTEM_PROMPT_REPLICA_TEMPLATE.format(
-            persona_block=self.persona.to_prompt_block(),
-            tema=tema,
-            estrategia_descricao=DESCRICAO_ESTRATEGIA[estrategia],
-        )
+    def abrir(self, tema: str, pergunta: str, historico: str) -> str:
         prompt = (
-            f"Histórico do debate até agora:\n{historico_texto}\n\n"
-            f"Dê sua réplica agora."
+            f"Debate até agora:\n{historico}\n\n"
+            f"Pergunta do(a) mediador(a): {pergunta}\n\n"
+            f"Responda à pergunta."
         )
-        texto = self.llm.gerar_texto(system=system, prompt=prompt)
-        return FalaCandidato(
-            rodada=rodada, candidato_id=self.persona.id, estrategia=estrategia.value,
-            texto=texto, tipo_fala="replica", tema=tema,
+        return _limpar_fala(self.llm.gerar_texto(self._system(tema), prompt))
+
+    def replicar(self, tema: str, historico: str) -> str:
+        prompt = (
+            f"Debate até agora:\n{historico}\n\n"
+            f"Responda diretamente ao que o {self.rotulo_oponente} acabou de dizer."
         )
+        return _limpar_fala(self.llm.gerar_texto(self._system(tema), prompt))
 
 
 # ---------------------------------------------------------------------------
 # Eleitor
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT_ELEITOR_TEMPLATE = """\
-Você está simulando um(a) eleitor(a) com o seguinte perfil. Responda
-SEMPRE como essa pessoa pensaria e reagiria, de forma consistente com
-seu perfil sociodemográfico, traços de personalidade e fundamentos
-morais -- mesmo que isso signifique discordar do "senso comum".
+SYSTEM_ELEITOR = """\
+Você vai simular um(a) eleitor(a) brasileiro(a) com o perfil abaixo. Pense
+e reaja como essa pessoa reagiria, de forma coerente com o perfil, a
+personalidade e os valores dela -- mesmo que isso contrarie o senso comum.
 
-{persona_block}
+{persona}
 
-Você está assistindo a um debate eleitoral entre dois candidatos (A e B).
-A cada rodada, você deve avaliar o que foi dito e indicar sua intenção
-de voto atual.
+Você está assistindo a um debate eleitoral na TV entre o Candidato 1 e o
+Candidato 2. Ao fim de cada rodada, diga em quem você votaria hoje.
 
-Responda SEMPRE em formato JSON com exatamente estes campos:
+Responda APENAS com um JSON neste formato:
 {{
-  "intencao_voto": "A" ou "B" ou "indeciso",
-  "confianca": número de 0 a 1 indicando o quão decidido você está,
-  "justificativa": breve explicação (1-2 frases) do motivo da sua posição,
-    mencionando o que no debate influenciou (ou não) sua opinião
-}}
-
-Não inclua nenhum texto fora do JSON.
-"""
+  "intencao_voto": "1", "2" ou "indeciso",
+  "confianca": número de 0 a 1 (o quanto você está decidido),
+  "justificativa": "1 ou 2 frases, na voz dessa pessoa, sobre o que no debate pesou (ou não) na decisão"
+}}"""
 
 
 class AgenteEleitor:
-    def __init__(self, persona: PersonaEleitor, llm: LLMClient):
+    def __init__(self, persona: PersonaEleitor, tipos_por_rotulo: dict[str, str], llm: LLMClient):
+        """`tipos_por_rotulo`: {"1": id_tipo_candidato_1, "2": id_tipo_candidato_2}."""
         self.persona = persona
         self.llm = llm
-        self.intencao_atual = persona.intencao_voto_inicial
+        self.tipos_por_rotulo = tipos_por_rotulo
+        self.rotulos_por_tipo = {t: r for r, t in tipos_por_rotulo.items()}
+        self.system = SYSTEM_ELEITOR.format(persona=persona.to_prompt_block())
+        self.intencao_atual = INDECISO
+        self.confianca_atual: float | None = None
 
-    def avaliar_rodada(self, run_id: str, rodada: int, historico_texto: str) -> RespostaEleitor:
-        system = SYSTEM_PROMPT_ELEITOR_TEMPLATE.format(
-            persona_block=self.persona.to_prompt_block()
-        )
+    def _descrever_posicao_atual(self) -> str:
+        if self.confianca_atual is None:
+            return "Você ainda não tinha uma intenção de voto antes do debate."
+        voto = (INDECISO if self.intencao_atual == INDECISO
+                else f"Candidato {self.rotulos_por_tipo[self.intencao_atual]}")
+        return f"Na rodada anterior, sua intenção de voto era: {voto} (confiança {self.confianca_atual:.2f})."
+
+    def avaliar(self, rodada: int, historico: str) -> RespostaEleitor:
         prompt = (
-            f"Debate até agora (mais recente ao final):\n{historico_texto}\n\n"
-            f"Sua intenção de voto na rodada anterior era: {self.intencao_atual}\n\n"
-            f"Qual é sua intenção de voto agora, após a rodada {rodada}?\n\n"
-            f"Responda APENAS com um JSON contendo exatamente os campos "
-            f'"intencao_voto" (A, B ou indeciso), "confianca" (0 a 1) e '
-            f'"justificativa" (texto curto). Nenhum texto fora do JSON.'
+            f"Debate até agora:\n{historico}\n\n"
+            f"{self._descrever_posicao_atual()}\n\n"
+            f"Após a rodada {rodada}, em quem você votaria? Responda só com o JSON."
         )
-        data = self.llm.gerar_json_validado(
-            system=system,
-            prompt=prompt,
-            campos_obrigatorios=["intencao_voto", "confianca", "justificativa"],
+        data = self.llm.gerar_json(
+            self.system, prompt,
+            campos=["intencao_voto", "confianca", "justificativa"],
+            validar=self._validar,
         )
-
         resposta = RespostaEleitor(
-            run_id=run_id,
             rodada=rodada,
             eleitor_id=self.persona.id,
             intencao_voto=data["intencao_voto"],
-            confianca=float(data["confianca"]),
+            confianca=data["confianca"],
             justificativa=data["justificativa"],
-            mudou_de_posicao=(data["intencao_voto"] != self.intencao_atual),
+            mudou_de_posicao=data["intencao_voto"] != self.intencao_atual,
         )
         self.intencao_atual = resposta.intencao_voto
+        self.confianca_atual = resposta.confianca
         return resposta
+
+    def _validar(self, data: dict) -> dict:
+        """Converte o rótulo ("1"/"2") no id do tipo e garante confiança em [0, 1]."""
+        texto = str(data["intencao_voto"]).strip().lower()
+        if "indecis" in texto:
+            intencao = INDECISO
+        else:
+            rotulos = {r for r in self.tipos_por_rotulo if r in texto}
+            if len(rotulos) != 1:
+                raise ValueError(f"intencao_voto inválida: {data['intencao_voto']!r}")
+            intencao = self.tipos_por_rotulo[rotulos.pop()]
+
+        confianca = float(data["confianca"])
+        if 1 < confianca <= 100:  # modelo respondeu em porcentagem
+            confianca /= 100
+        if not 0 <= confianca <= 1:
+            raise ValueError(f"confianca fora de [0, 1]: {data['confianca']!r}")
+
+        return {"intencao_voto": intencao, "confianca": confianca,
+                "justificativa": str(data["justificativa"]).strip()}
+
+
+def _limpar_fala(texto: str) -> str:
+    return texto.strip().strip('"“”').strip()

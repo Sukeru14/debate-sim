@@ -1,122 +1,92 @@
 """
-ETAPA 2 do pipeline: carrega um lote de personas JÁ GERADO (ver
-gerar_personas.py) e roda a simulação de debate.
+ETAPA 2: roda os confrontos entre os tipos de candidato, todos com o
+MESMO lote de eleitores (gerado por gerar_personas.py).
 
-Pipeline completo:
-    1. python gerar_personas.py --n 10 --out personas/lote_01.json
-    2. python main.py --personas personas/lote_01.json
+    python main.py --personas personas/lote_01.json --rodadas 5
 
-Mantendo as etapas separadas você pode reusar o MESMO lote de eleitores
-em várias rodadas de simulação (ex: testando diferentes temas ou
-diferentes candidatos), controlando essa variável.
+Por padrão roda os 3 confrontos possíveis (emocional x logico,
+emocional x credibilidade, logico x credibilidade). Tudo vai para um
+único banco SQLite, com uma linha em `runs` por confronto/repetição.
+
+--contrabalancear roda também cada confronto com os rótulos invertidos
+(quem era "Candidato 1" vira "Candidato 2"), para controlar viés de
+posição/rótulo do modelo. Dobra o tempo de execução.
 """
 
 import argparse
+from itertools import combinations
+import uuid
 
-from llm.client import LLMClient, ConfigLLM
-from schemas import PersonaCandidato, carregar_eleitores_json, EstrategiaArgumentativa
+from debate.candidatos import TIPOS
 from debate.orquestrador import OrquestradorDebate
+from llm.client import ConfigLLM, LLMClient
+from schemas import carregar_eleitores_json
 from storage.db import Storage
 
 
-TEMAS_PADRAO = [
-    "economia e geração de empregos",
-    "saúde pública",
-    "segurança pública",
-    "educação",
-    "meio ambiente e sustentabilidade",
-]
-
-ESTRATEGIAS_VALIDAS = [e.value for e in EstrategiaArgumentativa]
+def _parse_confronto(texto: str) -> tuple[str, str]:
+    partes = texto.split(":")
+    if len(partes) != 2 or not all(p in TIPOS for p in partes) or partes[0] == partes[1]:
+        raise argparse.ArgumentTypeError(
+            f"confronto inválido {texto!r}; use tipo1:tipo2 com tipos em {list(TIPOS)}"
+        )
+    return partes[0], partes[1]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Roda a simulação de debate eleitoral")
-    parser.add_argument("--personas", type=str, required=True,
-                         help="caminho do JSON de personas (gerado por gerar_personas.py)")
-    parser.add_argument("--rodadas", type=int, default=3, help="número de rodadas")
+    parser = argparse.ArgumentParser(description="Roda os confrontos do debate eleitoral simulado")
+    parser.add_argument("--personas", required=True, help="JSON de eleitores gerado por gerar_personas.py")
+    parser.add_argument("--rodadas", type=int, default=5)
+    parser.add_argument("--confrontos", nargs="+", type=_parse_confronto, default=None,
+                        help="ex: emocional:logico logico:credibilidade (padrão: todos os pares)")
+    parser.add_argument("--contrabalancear", action="store_true",
+                        help="roda cada confronto também com os rótulos 1/2 invertidos")
+    parser.add_argument("--repeticoes", type=int, default=1,
+                        help="nº de repetições de cada confronto (a seed muda a cada uma)")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--modelo", type=str, default="llama3.1")
-    parser.add_argument("--db", type=str, default="storage/debate_sim.db")
-    parser.add_argument("--fixar-abertura", action="store_true",
-                         help="desativa a alternância de quem abre cada rodada -- candidato A "
-                              "sempre abre. Por padrão (sem esta flag) a abertura ALTERNA a cada "
-                              "rodada, para não introduzir uma assimetria sistemática que não "
-                              "existe em debates reais (a Lei das Eleições determina ordem por "
-                              "sorteio).")
+    parser.add_argument("--modelo", default="llama3.1:8b")
+    parser.add_argument("--temperatura", type=float, default=0.7)
+    parser.add_argument("--num-ctx", type=int, default=8192)
     parser.add_argument("--max-rodadas-historico", type=int, default=3,
-                         help="quantas rodadas anteriores incluir no contexto passado ao "
-                              "modelo (None/0 = histórico completo). Reduz risco de falha "
-                              "de formato JSON em debates longos com modelos pequenos.")
-    parser.add_argument("--num-ctx", type=int, default=None,
-                         help="tamanho da janela de contexto do Ollama (ex: 8192). "
-                              "Se o modelo truncar o início do prompt silenciosamente, "
-                              "aumentar este valor pode ajudar (padrão do Ollama é 2048, "
-                              "geralmente pequeno demais para este caso de uso).")
-    parser.add_argument("--estrategia-a", type=str, default=None, choices=ESTRATEGIAS_VALIDAS,
-                         help="se definida, o candidato A usa SEMPRE esta estratégia durante "
-                              "toda a execução (em vez de sortear a cada fala). Use junto com "
-                              "--estrategia-b para montar 'embates' entre estratégias fixas "
-                              "(RQ3) -- rode uma execução por combinação, reaproveitando o "
-                              "mesmo --personas em todas.")
-    parser.add_argument("--estrategia-b", type=str, default=None, choices=ESTRATEGIAS_VALIDAS,
-                         help="mesma ideia de --estrategia-a, mas para o candidato B.")
+                        help="rodadas anteriores mandadas como contexto (0 = debate inteiro)")
+    parser.add_argument("--workers", type=int, default=4, help="eleitores avaliados em paralelo")
+    parser.add_argument("--db", default="storage/experimento.db")
     args = parser.parse_args()
 
-    print(f"Carregando eleitores de {args.personas}...")
     eleitores = carregar_eleitores_json(args.personas)
-    print(f"  {len(eleitores)} eleitores carregados.")
+    print(f"{len(eleitores)} eleitores carregados de {args.personas}")
 
-    candidato_a = PersonaCandidato(
-        id="A",
-        nome="Candidato A",
-        plataforma=(
-            "Defende aumento de investimento em programas sociais, "
-            "regulação ambiental mais forte e ampliação de direitos trabalhistas."
-        ),
-        estilo_retorico="caloroso e empático, fala em histórias pessoais",
-    )
-    candidato_b = PersonaCandidato(
-        id="B",
-        nome="Candidato B",
-        plataforma=(
-            "Defende redução de impostos, desburocratização econômica e "
-            "mais autonomia para estados e municípios."
-        ),
-        estilo_retorico="direto e técnico, fala em números e exemplos concretos",
-    )
+    confrontos = args.confrontos or list(combinations(TIPOS, 2))
+    if args.contrabalancear:
+        confrontos += [(b, a) for a, b in confrontos]
 
-    config_llm = ConfigLLM(modelo=args.modelo, temperatura=0.7, seed=args.seed, num_ctx=args.num_ctx)
-    storage = Storage(db_path=args.db)
+    storage = Storage(args.db)
+    try:
+        for repeticao in range(args.repeticoes):
+            config = ConfigLLM(modelo=args.modelo, temperatura=args.temperatura,
+                               seed=args.seed + repeticao, num_ctx=args.num_ctx)
+            llm = LLMClient(config)
+            for id_1, id_2 in confrontos:
+                run_id = uuid.uuid4().hex[:8]
+                print(f"\n=== {id_1} x {id_2} | repetição {repeticao + 1}/{args.repeticoes} "
+                      f"| seed {config.seed} | run {run_id} ===")
+                storage.criar_run(run_id, id_1, id_2, args.rodadas, config.modelo,
+                                  config.temperatura, config.seed, args.personas)
+                storage.salvar_eleitores(run_id, eleitores)
+                OrquestradorDebate(
+                    run_id=run_id,
+                    tipo_1=TIPOS[id_1],
+                    tipo_2=TIPOS[id_2],
+                    eleitores=eleitores,
+                    llm=llm,
+                    storage=storage,
+                    max_rodadas_historico=args.max_rodadas_historico or None,
+                    max_workers=args.workers,
+                ).rodar(args.rodadas)
+    finally:
+        storage.close()
 
-    max_rodadas_historico = args.max_rodadas_historico if args.max_rodadas_historico else None
-    estrategia_a = EstrategiaArgumentativa(args.estrategia_a) if args.estrategia_a else None
-    estrategia_b = EstrategiaArgumentativa(args.estrategia_b) if args.estrategia_b else None
-
-    descricao_run = f"Simulação com {len(eleitores)} eleitores, {args.rodadas} rodadas"
-    if estrategia_a or estrategia_b:
-        descricao_run += f" | estrategia_a={args.estrategia_a} estrategia_b={args.estrategia_b}"
-
-    orquestrador = OrquestradorDebate(
-        candidato_a=candidato_a,
-        candidato_b=candidato_b,
-        eleitores=eleitores,
-        temas=TEMAS_PADRAO,
-        config_llm=config_llm,
-        storage=storage,
-        descricao_run=descricao_run,
-        max_workers_eleitores=4,
-        alternar_abertura=not args.fixar_abertura,
-        max_rodadas_no_historico=max_rodadas_historico,
-        estrategia_a=estrategia_a,
-        estrategia_b=estrategia_b,
-    )
-
-    run_id = orquestrador.rodar_simulacao(n_rodadas=args.rodadas)
-    storage.close()
-
-    print(f"\nConcluído. run_id = {run_id}")
-    print(f"Dados salvos em {args.db}")
+    print(f"\nConcluído. Dados em {args.db}")
 
 
 if __name__ == "__main__":

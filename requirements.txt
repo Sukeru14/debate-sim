@@ -1,11 +1,8 @@
 requests>=2.31
 pandas>=2.0
-pyarrow>=14.0
-matplotlib>=3.8
 numpy>=1.24
 
-# Opcional -- só necessário para extrair microdados reais da PNAD Contínua
-# via Base dos Dados/BigQuery (ver extrair_microdados.py). Não precisa
-# instalar para rodar a simulação em si, nem para usar o parser do
-# arquivo bruto (persona/gerador_estatistico_pnadc_bruto.py).
+# Opcionais -- só para o caminho via Base dos Dados (extrair_microdados.py
+# e persona/gerador_estatistico_real.py):
 # basedosdados>=2.0
+# pyarrow>=14.0   (se o recorte for salvo em .parquet)

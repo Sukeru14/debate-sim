@@ -126,11 +126,7 @@ def extrair_recorte(billing_id: str, ano: int, trimestre: int, n_amostra: int, o
 
     df.to_csv(out_path, index=False)
     print(f"\n{len(df)} linhas salvas em {out_path}")
-    print("\nPróximo passo: ajustar MAPEAMENTO_COLUNAS em "
-          "persona/gerador_estatistico_real.py para bater com estas colunas "
-          "(note que esta query já traz os valores traduzidos via dicionário, "
-          "não os códigos numéricos -- isso SIMPLIFICA os métodos _mapear_* "
-          "dessa classe, que hoje esperam códigos numéricos).")
+    print(f"\nPróximo passo: python gerar_personas.py --fonte-perfil csv --arquivo {out_path} ...")
 
 
 def main():
