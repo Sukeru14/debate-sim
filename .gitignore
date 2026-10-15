@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
 storage/*.db
+storage/*.txt
+storage/*.csv
 dados/

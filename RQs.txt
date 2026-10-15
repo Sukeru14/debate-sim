@@ -1,0 +1,119 @@
+1. Como traços de personalidade (Big Five) influenciam a suscetibilidade à persuasão?
+
+Investiga se certos perfis psicológicos mudam de opinião mais facilmente durante o debate.
+
+2. Como os fundamentos morais dos eleitores influenciam a receptividade aos argumentos dos candidatos?
+
+Analisa se eleitores são mais persuadidos por argumentos alinhados aos seus valores morais.
+
+3. Como características demográficas afetam a evolução da intenção de voto?
+
+Avalia se idade, escolaridade, renda ou outras características influenciam mudanças de opinião.
+
+4. Como a diversidade do eleitorado afeta o resultado final do debate?
+
+Compara populações homogêneas e heterogêneas para observar diferenças na dinâmica eleitoral.
+
+5. Qual estratégia argumentativa é mais eficaz para persuadir diferentes perfis de eleitores?
+
+Compara estilos como racional, emocional, técnico ou moral.
+
+6. Como a interação entre personalidade do eleitor e estratégia argumentativa afeta a persuasão?
+
+Analisa quais combinações eleitor-argumento geram maior mudança de voto.
+
+7. Como o número de rodadas do debate influencia a estabilidade das preferências eleitorais?
+
+Verifica se mais rodadas geram mais mudanças de opinião ou estabilização.
+
+8. Como o nível inicial de indecisão dos eleitores afeta o resultado da eleição simulada?
+
+Compara eleitorados inicialmente decididos e indecisos.
+
+9. Como a intensidade das preferências iniciais influencia a resistência à persuasão?
+
+Investiga se eleitores com convicções fortes são mais difíceis de convencer.
+
+10. Qual o impacto da memória conversacional dos agentes na dinâmica do debate?
+
+Avalia se lembrar de rodadas anteriores altera a qualidade dos argumentos e a persuasão.
+
+11. Como diferentes modelos de linguagem influenciam os resultados da simulação?
+
+Compara resultados usando diferentes LLMs nos candidatos ou eleitores.
+
+12. Os resultados da simulação são consistentes entre múltiplas execuções?
+
+Analisa a robustez dos resultados diante da aleatoriedade dos LLMs.
+
+13. Como o grau de polarização inicial do eleitorado afeta a dinâmica do debate?
+
+Compara cenários com eleitorados neutros, moderadamente polarizados e altamente polarizados.
+
+14. Como a distribuição ideológica inicial dos eleitores influencia o resultado final?
+
+Avalia o impacto da composição ideológica da população simulada.
+
+15. Como diferentes estilos de moderação afetam a evolução da opinião pública?
+
+Compara moderadores passivos, ativos, confrontadores ou focados em fact-checking.
+
+16. Qual o impacto da presença de eleitores indecisos no resultado eleitoral?
+
+Investiga o papel dos indecisos como grupo decisivo.
+
+17. Como a exposição repetida aos mesmos argumentos influencia a persuasão?
+
+Analisa se argumentos repetidos reforçam ou reduzem seu efeito.
+
+18. Como o alinhamento entre perfil psicológico do candidato e do eleitor afeta a persuasão?
+
+Verifica se eleitores são mais convencidos por candidatos percebidos como semelhantes.
+
+19. Como diferentes estratégias de atualização de crenças influenciam a dinâmica eleitoral?
+
+Compara regras simples, probabilísticas ou baseadas em justificativas fornecidas pelos LLMs.
+
+20. Como a confiança do eleitor em sua própria decisão evolui durante o debate?
+
+Analisa não apenas a intenção de voto, mas também a certeza associada à escolha.
+
+21. Como a combinação de fatores demográficos, personalidade e valores morais influencia a persuasão?
+
+Investiga efeitos conjuntos em vez de analisar cada característica isoladamente.
+
+22. Quais características dos eleitores são mais preditivas de mudança de voto?
+
+Usa análise estatística ou aprendizado de máquina para identificar os fatores mais importantes.
+
+23. Como diferentes níveis de informação política dos eleitores afetam sua suscetibilidade à persuasão?
+
+Compara eleitores bem informados e pouco informados.
+
+24. Como a qualidade dos argumentos apresentados pelos candidatos afeta o comportamento eleitoral?
+
+Avalia se argumentos mais elaborados geram maior impacto.
+
+25. Como a presença de argumentos contraditórios influencia a confiança dos eleitores?
+
+Analisa situações em que candidatos apresentam informações conflitantes.
+
+26. Como a composição psicológica da população influencia o vencedor da eleição simulada?
+
+Verifica se determinadas distribuições de personalidade favorecem certos candidatos.
+
+27. Como os fundamentos morais interagem com traços de personalidade na formação da opinião política?
+
+Estuda o efeito combinado de valores e personalidade.
+
+28. Como diferentes perfis de eleitores contribuem para a formação de consenso ou fragmentação?
+
+Analisa quais grupos tendem a convergir ou permanecer divididos.
+
+29. É possível prever mudanças de voto a partir das características dos eleitores antes do debate?
+
+Investiga a capacidade preditiva dos perfis dos agentes.
+
+30. Quais padrões emergentes surgem da interação entre candidatos, moderador e eleitores em um sistema multiagente baseado em LLMs?
+
+Pergunta mais exploratória focada em fenômenos emergentes da simulação.

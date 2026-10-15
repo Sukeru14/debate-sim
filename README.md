@@ -16,12 +16,12 @@ Big Five e Fundamentos Morais.
 ### 1. Gerar os eleitores
 
 ```bash
-python gerar_personas.py --n 30 --arquivo dados/PNADC_012026.txt --out personas/lote_01.json
+python gerar_personas.py --n 30 --arquivo storage/PNADC_012026.txt --out personas/lote_01.json
 ```
 
 - O perfil (idade, gênero, UF/região, raça/cor, urbano/rural) é sorteado do
   arquivo bruto da PNAD Contínua (FTP do IBGE), com peso amostral.
-  Escolaridade e renda ainda vêm de distribuições aproximadas (ver
+  Escolaridade e renda vêm de distribuições aproximadas (ver
   docstring de `persona/gerador_estatistico_pnadc_bruto.py`).
 - Alternativa: `--fonte-perfil csv --arquivo recorte.csv` com um recorte
   extraído via Base dos Dados (`extrair_microdados.py`, exige Google Cloud).
@@ -53,6 +53,13 @@ Roda os 3 confrontos com o **mesmo** lote de eleitores e salva tudo em
 ```bash
 python -m analysis.explorar --db storage/experimento.db
 ```
+
+## Perguntas de Pesquisa (RQs) do TCC
+
+- **RQ1 (Eficácia persuasiva dos estilos retóricos):** Qual modo de persuasão (*pathos*, *logos* ou *ethos*) apresenta maior eficácia de captação de votos em confrontos diretos sob controle estrito de plataforma?
+- **RQ2 (Alinhamento psicológico e moral):** Como os traços de personalidade (Big Five) e os fundamentos morais modulam a suscetibilidade e a afinidade a cada estilo de argumentação?
+- **RQ3 (Evolução da convicção e volatilidade):** De que maneira o avanço das rodadas afeta a estabilidade do voto e a evolução da certeza/confiança reportada pelos eleitores?
+- **RQ4 [Foco em Computação/Modelagem] (Previsibilidade e Robustez):** As características dos eleitores são preditivas da escolha final e da propensão à mudança de voto? Os resultados da simulação são consistentes frente a variações estocásticas do LLM e alternância de ordem/rótulo?
 
 ## Desenho experimental
 
